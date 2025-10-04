@@ -1,0 +1,53 @@
+cmdline_tool_tips: "This is a command line tool.\n\nYou need to open cmd.exe and run it from there."
+remove_temp_dir_failed: "Remove temp dir failed"
+
+console:
+  warning: "Warning"
+  success: "Success"
+  info: "Info   "
+  debug: "Debug  "
+  error: "Err    "
+
+create_patch:
+  bsdiff_preset: "BSDiff storage does not support adjusting compression parameters, preset parameter will be ignored"
+  mount_base: "Mount base image"
+  unmount_base: "Unmount base image"
+  mount_updated: "Mount updated image"
+  unmount_updated: "Unmount updated image"
+  compare_diff: "Compare image diff"
+  create_patch: "Create patch"
+  Add: "[Add]"
+  Delete: "[Delete]"
+  Modify: "[Modify]"
+  exclude: "[Exclude]"
+  success: "Create patch success"
+  failed: "Create patch failed"
+
+apply_patch:
+  apply_patch: "Apply patch"
+  mount_patch: "Mount patch"
+  unmount_patch: "Unmount patch"
+  checking_patch: "Checking patch"
+  already_applied: "Patch has already been applied"
+  not_match: "Base image information does not match"
+  export_updated: "Export updated image"
+  success: "Apply patch success"
+  failed: "Apply patch failed"
+
+parse_patch:
+  not_found_manifest: "Invalid patch package, PatchManifest not found"
+  failed: "Parse patch package failed"
+
+merge_patch:
+  merge_patch: "Merge patch"
+  success: "Merge patch success"
+  failed: "Merge patch failed"
+
+get_patch_info:
+  failed: "Get patch info failed"
+
+cleanup:
+  unmount: "Unmount"
+  not_invalid_mount: "No invalid mount point"
+  success: "Cleanup complete"
+
