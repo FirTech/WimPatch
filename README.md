@@ -1,5 +1,7 @@
 # WimPatch 🛠️
 
+[简体中文](README.zh.md) [English](README.md)
+
 WimPatch is an efficient Windows Imaging Format (WIM) patching tool for creating and applying incremental patches for
 WIM files, enabling efficient and secure management of WIM file incremental updates.
 

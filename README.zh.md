@@ -1,5 +1,7 @@
 # WimPatch 🛠️
 
+[简体中文](README.zh.md) [English](README.md)
+
 WimPatch 是一个高效的 Windows 映像文件 (WIM) 补丁工具，用于创建和应用 WIM 文件的增量补丁，高效且安全地管理 WIM 文件的增量更新。
 
 ## 功能特性 ✨
