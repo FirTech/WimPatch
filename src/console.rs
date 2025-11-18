@@ -20,7 +20,7 @@ pub fn write_console(console_type: ConsoleType, message: &str) {
         ConsoleType::Success => style(t!("console.success")).green(),
         ConsoleType::Warning => style(t!("console.warning")).yellow(),
         ConsoleType::Error => style(t!("console.error")).red(),
-        ConsoleType::Debug => style(t!("console.debug")).magenta()
+        ConsoleType::Debug => style(t!("console.debug")).magenta(),
     };
-    println!("  {}      {}", &title, message);
+    println!(" {}      {}", &title, message);
 }

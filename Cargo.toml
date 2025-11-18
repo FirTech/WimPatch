@@ -11,36 +11,30 @@ codegen-units = 1
 panic = 'abort'
 
 [build-dependencies]
-embed-resource = "3.0.5"
-thunk-rs = "0.3.2"
+embed-resource = "3.0.6"
+thunk-rs = "0.3.5"
 
 [dependencies]
 vc-ltl = "5.2.2"
-rust-embed = "8.7.2"
-clap = { version = "4.5.45", features = ["derive"] }
+clap = { version = "4.5.51", features = ["derive"] }
 fastrand = "2.3.0"
-lazy_static = "1.5.0"
-libloading = "0.8.8"
-serde = { version = "1.0.209", features = ["derive"] }
+libloading = "0.9.0"
+serde = { version = "1.0.228", features = ["derive"] }
 rust-i18n = "3.1.5"
-console = "0.16.0"
-anyhow = "1.0.99"
-quick-xml = { version = "0.38.3", features = ["serialize"] }
-chrono = "0.4.38"
+console = "0.16.1"
+anyhow = "1.0.100"
+quick-xml = { version = "0.38.4", features = ["serialize"] }
+uuid = { version = "1.18.1", features = ["v4"] }
+chrono = "0.4.42"
 sha2 = "0.10.9"
 sys-locale = "0.3.2"
 zstd = "0.13.3"
 bsdiff = "0.2.1"
-indicatif = "0.18.0"
+indicatif = "0.18.3"
 semver = "1.0.27"
-rand = "0.9.2"
-num_cpus = "1.17.0"
-threadpool = "1.8.1"
-globset = "0.4.16"
-log = "0.4.28"
-uuid = { version = "1.18.1", features = ["v4"] }
-xmltree = "0.11.0"
+ctrlc = "3.5.1"
+dialoguer = "0.12.0"
 
 [dependencies.windows]
-version = "0.61.3"
+version = "0.62.2"
 features = ["Win32_Globalization", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"]

@@ -2,23 +2,81 @@ use clap::{Parser, Subcommand, ValueEnum};
 use semver::Version;
 use std::path::PathBuf;
 
+/// Language options
+#[derive(Debug, Clone, ValueEnum)]
+pub enum Language {
+    /// English language
+    En,
+    /// Simplified Chinese
+    ZhCn,
+    /// Traditional Chinese
+    ZhTw,
+    /// Japanese
+    JaJp,
+}
+
 #[derive(Parser, Debug)]
 #[clap(version)]
 #[clap(propagate_version = false)]
 #[command(disable_version_flag = false, arg_required_else_help = true)]
-pub struct Cli {
+pub struct App {
     #[command(subcommand)]
     pub(crate) command: Commands,
 
     /// 缓冲区大小（单位：字节）
     #[clap(help = "Buffer size in bytes [default: 65536]")]
-    #[clap(short, long)]
+    #[clap(long)]
     pub(crate) buffer_size: Option<usize>,
 
     /// 调试模式
     #[clap(help = "Debug mode")]
-    #[clap(short, long)]
+    #[clap(long)]
     pub(crate) debug: bool,
+
+    /// 临时目录路径
+    #[clap(help = "Scratch directory")]
+    #[clap(long)]
+    pub(crate) scratchdir: Option<PathBuf>,
+
+    /// 设置程序语言
+    #[clap(help = "Set program language")]
+    #[clap(long, value_enum)]
+    pub(crate) language: Option<Language>,
+}
+
+#[derive(Parser, Debug)]
+#[clap(version)]
+#[clap(propagate_version = false)]
+#[command(disable_version_flag = false, arg_required_else_help = true)]
+pub struct Intrinsic {
+    #[command(subcommand)]
+    pub(crate) command: IntrinsicCommands,
+
+    /// 缓冲区大小（单位：字节）
+    #[clap(help = "Buffer size in bytes [default: 65536]")]
+    #[clap(long)]
+    pub(crate) buffer_size: Option<usize>,
+
+    /// 调试模式
+    #[clap(help = "Debug mode")]
+    #[clap(long)]
+    pub(crate) debug: bool,
+
+    /// 临时目录路径
+    #[clap(help = "Scratch directory")]
+    #[clap(long)]
+    pub(crate) scratchdir: Option<PathBuf>,
+
+    /// 设置程序语言
+    #[clap(help = "Set program language")]
+    #[clap(long, value_enum)]
+    pub(crate) language: Option<Language>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum IntrinsicCommands {
+    Create,
+    Apply,
 }
 
 #[derive(Subcommand, Debug)]
@@ -30,20 +88,30 @@ pub enum Commands {
         #[clap(short, long, value_parser = exist_file_parser)]
         base: PathBuf,
 
+        /// 镜像索引
+        #[clap(help = "Index of the image in the wim file")]
+        #[arg(short, long = "index", conflicts_with_all = ["base_index", "target_index"])]
+        index: Option<u32>,
+
+        /// 源镜像索引
+        #[clap(help = "Index of the image in the base wim file")]
+        #[arg(long = "base-index", requires = "target_index", conflicts_with = "index")]
+        base_index: Option<u32>,
+
         /// 更新镜像文件路径
-        #[clap(help = "Updated wim image file path")]
+        #[clap(help = "Target wim image file path")]
         #[clap(short, long, value_parser = exist_file_parser)]
-        updated: PathBuf,
+        target: PathBuf,
+
+        /// 更新镜像索引
+        #[clap(help = "Index of the image in the target wim file")]
+        #[arg(long = "target-index", requires = "base_index", conflicts_with = "index")]
+        target_index: Option<u32>,
 
         /// 输出补丁文件路径
         #[clap(help = "Out patch file path")]
         #[clap(short, long)]
         out: PathBuf,
-
-        /// 源镜像索引
-        #[clap(help = "Index of the image in the wim file")]
-        #[clap(short, long, default_value_t = 1)]
-        index: u32,
 
         /// 压缩算法
         #[clap(help = "Compression algorithm")]
@@ -105,8 +173,8 @@ pub enum Commands {
 
         /// 源镜像索引
         #[clap(help = "Index of the image in the base wim file")]
-        #[clap(short, long, default_value_t = 1)]
-        index: u32,
+        #[clap(short, long)]
+        index: Option<u32>,
 
         /// 排除文件
         #[clap(help = "Exclude files from the patch file")]
@@ -129,6 +197,11 @@ pub enum Commands {
         #[clap(help = "Out patch file path")]
         #[clap(short, long)]
         out: PathBuf,
+
+        /// 压缩算法
+        #[clap(help = "Compression algorithm")]
+        #[clap(short, long, value_enum, default_value_t = Compress::Lzx)]
+        compress: Compress,
     },
 
     /// Get patch file info
@@ -144,7 +217,7 @@ pub enum Commands {
     },
 
     /// Cleanup invalid mount
-    Cleanup {},
+    Clean {},
 }
 
 /// Compression preset
@@ -172,7 +245,7 @@ pub enum Storage {
 }
 
 /// Compression algorithm
-#[derive(Debug, Clone, ValueEnum, PartialEq)]
+#[derive(Debug, Clone, ValueEnum, PartialEq, Copy)]
 pub enum Compress {
     /// No compression
     None,

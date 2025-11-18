@@ -1,13 +1,10 @@
-use quick_xml::{DeError, SeError};
+use quick_xml::SeError;
 use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 /// 补丁清单结构体
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename = "PatchManifest")]
 pub struct PatchManifest {
     /// 补丁清单唯一标识符
@@ -38,16 +35,24 @@ pub struct PatchManifest {
     #[serde(rename = "Description")]
     pub description: String,
 
+    /// 基础镜像唯一标识符
+    #[serde(rename = "BaseImageGuid")]
+    pub base_image_guid: String,
+
     /// 基础镜像信息
     #[serde(rename = "BaseImageInfo")]
     pub base_image_info: ImageInfo,
 
-    /// 模板镜像信息
+    /// 目标镜像唯一标识符
+    #[serde(rename = "TargetImageGuid")]
+    pub target_image_guid: String,
+
+    /// 目标镜像信息
     #[serde(rename = "TargetImageInfo")]
     pub target_image_info: ImageInfo,
 
     /// 操作集合
-    pub operations: Operations,
+    pub operations: Vec<Operation>,
 }
 
 /// 镜像信息结构体
@@ -99,66 +104,67 @@ pub struct ImageInfo {
     pub total_bytes: u64,
 }
 
-impl ImageInfo {
-    /// 从字符串解析镜像信息
-    pub fn from_str(s: &str) -> Result<ImageInfo, DeError> {
-        quick_xml::de::from_str::<ImageInfo>(s)
-    }
-}
+/// 操作集合结构体
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename = "Operation")]
+pub struct Operation {
+    /// 操作类型
+    #[serde(rename = "@action")]
+    pub action: Action,
 
-/// 校验和结构
-#[derive(Debug, Serialize, Deserialize, Default)]
-pub struct Checksum {
-    /// 算法类型（如SHA256）
-    pub algorithm: String,
-
-    /// 校验和值
-    pub value: String,
-}
-
-/// 带路径属性的操作
-#[derive(Debug, Serialize, Deserialize, Default)]
-pub struct PathOperation {
     /// 操作目标路径
+    #[serde(rename = "Path")]
     pub path: String,
 
     /// 大小
-    pub size: u64,
+    #[serde(rename = "Size", skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+
+    /// 存储类型（full/bsdiff/zstdiff）
+    #[serde(rename = "Storage", skip_serializing_if = "Option::is_none")]
+    pub storage: Option<String>,
 }
 
-/// 修改操作结构体（扩展PathOperation）
-#[derive(Debug, Serialize, Deserialize, Default)]
-pub struct ModifyOperation {
-    /// 操作目标路径
-    pub path: String,
-
-    /// 大小
-    pub size: u64,
-
-    /// 存储类型（full/bsdiff）
-    pub storage: String,
-}
-
-/// 操作集合
-#[derive(Debug, Serialize, Deserialize, Default)]
-#[serde(rename = "Operations")]
-pub struct Operations {
-    /// 删除操作列表
-    #[serde(rename = "Delete", default, skip_serializing_if = "Vec::is_empty")]
-    pub deletes: Vec<PathOperation>,
-
-    /// 新增操作列表
-    #[serde(rename = "Add", default, skip_serializing_if = "Vec::is_empty")]
-    pub adds: Vec<PathOperation>,
-
-    /// 修改操作列表
-    #[serde(rename = "Modify", default, skip_serializing_if = "Vec::is_empty")]
-    pub modifies: Vec<ModifyOperation>,
+/// 目录修改类型枚举
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum Action {
+    /// 新增文件或目录
+    Add,
+    /// 删除文件或目录
+    Delete,
+    /// 修改文件
+    Modify,
 }
 
 impl PatchManifest {
-    /// 创建新的补丁清单
-    pub fn new(name: &str, description: &str, author: &str, version: &str) -> Self {
+    /// 创建补丁清单
+    ///
+    /// # 参数
+    ///
+    /// * `name` - 补丁名称
+    /// * `description` - 补丁描述
+    /// * `author` - 作者
+    /// * `version` - 版本
+    /// * `base_image_guid` - 基础镜像唯一标识符
+    /// * `base_image_info` - 基础镜像信息
+    /// * `target_image_guid` - 目标镜像唯一标识符
+    /// * `target_image_info` - 目标镜像信息
+    /// * `operations` - 操作集合
+    ///
+    /// # 返回值
+    ///
+    /// * `PatchManifest` - 新创建的补丁清单
+    pub fn new(
+        name: &str,
+        description: &str,
+        author: &str,
+        version: &str,
+        base_image_guid: &str,
+        base_image_info: &ImageInfo,
+        target_image_guid: &str,
+        target_image_info: &ImageInfo,
+        operations: &[Operation],
+    ) -> Self {
         // 生成当前时间的ISO 8601格式时间戳
         let now = SystemTime::now();
         let timestamp = now
@@ -179,9 +185,11 @@ impl PatchManifest {
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
             author: author.to_string(),
             description: description.to_string(),
-            base_image_info: Default::default(),
-            target_image_info: Default::default(),
-            operations: Operations::new(),
+            base_image_guid: base_image_guid.to_string(),
+            base_image_info: base_image_info.clone(),
+            target_image_guid: target_image_guid.to_string(),
+            target_image_info: target_image_info.clone(),
+            operations: operations.to_vec(),
         }
     }
 
@@ -191,45 +199,23 @@ impl PatchManifest {
     }
 
     /// 从XML字符串解析
+    ///
+    /// # 参数
+    ///
+    /// * `xml_str` - 包含XML内容的字符串
+    ///
+    /// # 返回值
+    ///
+    /// * `Ok(PatchManifest)` - 如果解析成功
+    /// * `Err` - 如果发生错误
     pub fn from_xml(xml_str: &str) -> Result<Self, quick_xml::DeError> {
         quick_xml::de::from_str(xml_str)
     }
-
-    /// 保存XML到文件
-    pub fn save_to_file(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let xml_content = self.to_xml()?;
-        let mut file = File::create(path)?;
-        file.write_all(xml_content.as_bytes())?;
-        Ok(())
-    }
 }
 
-impl Operations {
-    /// 创建新的操作集合
-    pub fn new() -> Self {
-        Operations {
-            deletes: Vec::new(),
-            adds: Vec::new(),
-            modifies: Vec::new(),
-        }
-    }
-
-    /// 添加删除操作
-    pub fn add_delete(&mut self, path: String) {
-        self.deletes.push(PathOperation { path, size: 0 });
-    }
-
-    /// 添加新增操作
-    pub fn add_add(&mut self, path: String, size: u64) {
-        self.adds.push(PathOperation { path, size });
-    }
-
-    /// 添加修改操作
-    pub fn add_modify(&mut self, path: String, size: u64, storage: String) {
-        self.modifies.push(ModifyOperation {
-            path,
-            size,
-            storage,
-        });
+impl ImageInfo {
+    /// 从字符串解析镜像信息
+    pub fn from_xml(xml_str: &str) -> Result<ImageInfo, quick_xml::DeError> {
+        quick_xml::de::from_str(xml_str)
     }
 }

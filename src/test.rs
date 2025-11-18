@@ -1,16 +1,17 @@
 #[cfg(test)]
 mod tests {
     use crate::bsdiff::BsDiff;
-    use crate::utils::{compare_directories, replace_xml_field, DiffType};
+    use crate::manifest::{Action, ImageInfo, Operation, PatchManifest};
+    use crate::utils::{compare_directories, get_tmp_name, replace_xml_field, DiffType};
     use crate::wimgapi::{
-        Wimgapi, WIM_COMPRESS_LZX, WIM_COMPRESS_NONE, WIM_CREATE_ALWAYS,
-        WIM_FLAG_MOUNT_READONLY, WIM_GENERIC_MOUNT, WIM_GENERIC_READ, WIM_GENERIC_WRITE, WIM_MSG_PROCESS,
-        WIM_MSG_PROGRESS, WIM_OPEN_EXISTING, WIM_REFERENCE_APPEND,
+        Wimgapi, WIM_COMPRESS_LZX, WIM_COMPRESS_NONE, WIM_CREATE_ALWAYS, WIM_FLAG_MOUNT_READONLY,
+        WIM_GENERIC_MOUNT, WIM_GENERIC_READ, WIM_GENERIC_WRITE, WIM_MSG_PROCESS, WIM_MSG_PROGRESS,
+        WIM_OPEN_EXISTING, WIM_REFERENCE_APPEND,
     };
     use crate::zstdiff::ZstdDiff;
-    use crate::TEMP_PATH;
+    use crate::get_temp_path;
     use indicatif::{ProgressBar, ProgressStyle};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::thread::sleep;
     use std::time::Duration;
     use std::{fs, ptr, thread};
@@ -43,7 +44,7 @@ mod tests {
         if let Err(err) = compare_directories(src, &update, |diff_type, old, new, path| {
             // 构造补丁
             match diff_type {
-                DiffType::Added => {
+                DiffType::Add => {
                     println!("添加: {:?}", path);
                     if let Some(new_path) = new {
                         // 确保patch目录存在
@@ -68,10 +69,10 @@ mod tests {
                         }
                     }
                 }
-                DiffType::Removed => {
+                DiffType::Delete => {
                     println!("删除: {:?}", path);
                 }
-                DiffType::Modified => {
+                DiffType::Modify => {
                     println!("修改: {:?}", path);
                     // 确保patch目录存在
                     if let Some(old_path) = old {
@@ -106,10 +107,10 @@ mod tests {
         let old_file = PathBuf::from(r"D:\UserData\Desktop\About1.exe");
         let updated_file = PathBuf::from(r"D:\UserData\Desktop\About2.exe");
 
-        let patch_file = old_file.parent().unwrap().join(format!(
-            "{}.diff",
-            old_file.file_name().unwrap().to_string_lossy()
-        ));
+        let patch_file = old_file
+            .parent()
+            .unwrap()
+            .join(format!("{}.diff", old_file.file_name().unwrap().to_string_lossy()));
         let new_file = old_file.parent().unwrap().join(format!(
             "{}-new.{}",
             old_file.file_stem().unwrap().to_string_lossy(),
@@ -186,12 +187,7 @@ mod tests {
 
         // 创建wim
         let handle = wimgapi
-            .open(
-                &target,
-                WIM_GENERIC_WRITE,
-                WIM_CREATE_ALWAYS,
-                WIM_COMPRESS_LZX,
-            )
+            .open(&target, WIM_GENERIC_WRITE, WIM_CREATE_ALWAYS, WIM_COMPRESS_LZX)
             .unwrap();
 
         // 设置捕获标志以排除系统文件
@@ -232,10 +228,7 @@ mod tests {
         wimgapi.close(hImage).unwrap();
         wimgapi.close(handle).unwrap();
 
-        println!(
-            "WIM file created successfully at: {}",
-            target.to_string_lossy()
-        );
+        println!("WIM file created successfully at: {}", target.to_string_lossy());
     }
 
     // 创建引用差分wim
@@ -248,23 +241,13 @@ mod tests {
 
         // 打开 base.wim（只读）
         let h_base = wimgapi
-            .open(
-                &base_wim,
-                WIM_GENERIC_READ,
-                WIM_OPEN_EXISTING,
-                WIM_COMPRESS_NONE,
-            )
+            .open(&base_wim, WIM_GENERIC_READ, WIM_OPEN_EXISTING, WIM_COMPRESS_NONE)
             .unwrap();
         println!("open base.wim: {}", h_base);
 
         // 创建 patch.wim（写入，指定压缩）
         let h_patch = wimgapi
-            .open(
-                &save_path,
-                WIM_GENERIC_WRITE,
-                WIM_CREATE_ALWAYS,
-                WIM_COMPRESS_LZX,
-            )
+            .open(&save_path, WIM_GENERIC_WRITE, WIM_CREATE_ALWAYS, WIM_COMPRESS_LZX)
             .unwrap();
         println!("open patch.wim: {}", h_patch);
 
@@ -289,21 +272,11 @@ mod tests {
         wimgapi.close(h_base).unwrap();
     }
 
-    // 获取挂载的wim镜像
-    #[test]
-    fn get_mounted_image_info() {
-        let wimgapi = Wimgapi::new(None).unwrap();
-        let mounted_images = wimgapi.get_mounted_image().unwrap();
-        for image in mounted_images {
-            println!("{:#?}", image);
-        }
-    }
-
     // 挂载镜像测试
     #[test]
     fn mount_image() {
         let wim_path = PathBuf::from(r"D:\UserData\Desktop\test\WimPatch\base.wim");
-        let mount_path = TEMP_PATH.join("mount");
+        let mount_path = get_temp_path().join("mount");
         // 确保挂载目录存在
         if !mount_path.exists() {
             fs::create_dir_all(&mount_path).unwrap();
@@ -318,7 +291,7 @@ mod tests {
             )
             .unwrap();
 
-        wimgapi.set_temp_path(h_wim, &TEMP_PATH).unwrap();
+        wimgapi.set_temp_path(h_wim, get_temp_path()).unwrap();
         let h_image = wimgapi.load_image(h_wim, 1).unwrap();
         wimgapi
             .mount_image_handle(h_image, &mount_path, WIM_FLAG_MOUNT_READONLY)
@@ -333,15 +306,34 @@ mod tests {
         wimgapi.close(h_wim).unwrap();
     }
 
+    // 获取挂载的wim镜像
     #[test]
-    fn get_mount_image_info() {
+    fn get_mounted_image_info() {
         let wimgapi = Wimgapi::new(None).unwrap();
 
         let mounted_images = wimgapi.get_mounted_image().unwrap();
-        println!("{}", mounted_images.len());
         for image in mounted_images {
             println!("{:#?}", image);
         }
+    }
+
+    #[test]
+    fn get_image_info_test() {
+        let wimgapi = Wimgapi::new(None).unwrap();
+
+        let h_wim = wimgapi
+            .open(
+                &Path::new(r"D:\UserData\Desktop\test\WimPatch\FirPE_V2.0.2.wim"),
+                WIM_GENERIC_READ | WIM_GENERIC_MOUNT,
+                WIM_OPEN_EXISTING,
+                WIM_COMPRESS_NONE,
+            )
+            .unwrap();
+        let attributes = wimgapi.get_attributes(h_wim).unwrap();
+
+        wimgapi.close(h_wim).unwrap();
+
+        println!("{:#?}", attributes);
     }
 
     #[test]
@@ -374,10 +366,8 @@ mod tests {
 
         // 使用更简单的字符串替换方法，但处理不同值的情况
         let modified_xml = replace_xml_field(&xml, "NAME", "Windows 11PE 专业版");
-        let modified_xml =
-            replace_xml_field(&modified_xml, "DESCRIPTION", "Windows 11PE 专业增强版");
-        let modified_xml =
-            replace_xml_field(&modified_xml, "DISPLAYNAME", "Windows 11PE Professional");
+        let modified_xml = replace_xml_field(&modified_xml, "DESCRIPTION", "Windows 11PE 专业增强版");
+        let modified_xml = replace_xml_field(&modified_xml, "DISPLAYNAME", "Windows 11PE Professional");
         let modified_xml = replace_xml_field(
             &modified_xml,
             "DISPLAYDESCRIPTION",
@@ -391,10 +381,129 @@ mod tests {
         assert!(modified_xml.contains("<NAME>Windows 11PE 专业版</NAME>"));
         assert!(modified_xml.contains("<DESCRIPTION>Windows 11PE 专业增强版</DESCRIPTION>"));
         assert!(modified_xml.contains("<DISPLAYNAME>Windows 11PE Professional</DISPLAYNAME>"));
-        assert!(modified_xml.contains(
-            "<DISPLAYDESCRIPTION>Windows 11PE Professional Enhanced Edition</DISPLAYDESCRIPTION>"
-        ));
+        assert!(
+            modified_xml
+                .contains("<DISPLAYDESCRIPTION>Windows 11PE Professional Enhanced Edition</DISPLAYDESCRIPTION>")
+        );
 
         println!("\n修改验证成功！所有字段都已成功更新。");
+    }
+
+    #[test]
+    fn test_random_string() {
+        println!("{:?}", get_tmp_name("base-", "", 6));
+    }
+
+    #[test]
+    fn test_patch_mnifest() {
+        let image_info = ImageInfo {
+            index: 0,
+            name: None,
+            display_name: None,
+            description: None,
+            display_description: None,
+            flags: None,
+            dir_count: 0,
+            file_count: 0,
+            hard_link_bytes: 0,
+            total_bytes: 0,
+        };
+        let mut operations = Vec::new();
+
+        operations.push(Operation {
+            action: Action::Add,
+            path: "file".to_string(),
+            size: Some(0),
+            storage: None,
+        });
+        operations.push(Operation {
+            action: Action::Add,
+            path: "file_2".to_string(),
+            size: Some(0),
+            storage: None,
+        });
+        operations.push(Operation {
+            action: Action::Delete,
+            path: "delete_file".to_string(),
+            size: None,
+            storage: None,
+        });
+        let manifest = PatchManifest::new(
+            "test-patch",
+            "",
+            "",
+            "1.0.0",
+            "",
+            &image_info,
+            "",
+            &image_info,
+            &operations,
+        );
+
+        println!("{:#?}", manifest);
+        println!("{}", manifest.to_xml().unwrap());
+    }
+
+    pub struct WimMountHandle {
+        // 挂载点路径，drop时需要卸载这个路径
+        mount_path: PathBuf,
+
+        // 挂载标志或其他清理所需的识别信息
+        mount_flags: u32,
+    }
+
+    impl WimMountHandle {
+        // 构造函数：创建挂载点后，将清理信息封装起来
+        pub fn new(path: PathBuf, flags: u32) -> anyhow::Result<Self> {
+            // 实际的挂载操作应该在这里调用
+            // wim_api.mount_image(...) ...
+
+            Ok(WimMountHandle {
+                mount_path: path,
+                mount_flags: flags,
+            })
+        }
+
+        pub fn mount_image(&self) -> anyhow::Result<()> {
+            // 实际调用WIM API的挂载函数
+            println!("挂载路径: {:?}", self.mount_path);
+            Err(anyhow::anyhow!("挂载失败"))
+        }
+
+        // [可选] 包装一个方法来处理清理失败的情况，而不是直接在 drop 中 panic
+        fn perform_cleanup(&self) -> anyhow::Result<()> {
+            // 实际调用WIM API的卸载函数
+            println!("卸载路径: {:?}", self.mount_path);
+            Ok(())
+            // 如果卸载失败，返回错误
+        }
+    }
+    impl Drop for WimMountHandle {
+        fn drop(&mut self) {
+            match self.perform_cleanup() {
+                Ok(_) => {
+                    // 清理成功，什么都不做
+                    println!("INFO: WIM 挂载点 {} 自动卸载成功。", self.mount_path.display());
+                }
+                Err(e) => {
+                    // 清理失败：记录错误，但不能 panic 或返回错误。
+                    // 打印到标准错误是命令行工具常用的方式。
+                    eprintln!(
+                        "⚠️ 警告: 自动清理失败！WIM 挂载点 {} 卸载失败，请手动清理。错误详情: {}",
+                        self.mount_path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn drop_test() -> anyhow::Result<()> {
+        let mount_path = PathBuf::from("C:\\Windows\\System32\\wim\\Windows 11PE 专业版.wim");
+        let mount_flags = WIM_GENERIC_READ;
+        let handle = WimMountHandle::new(mount_path, mount_flags).unwrap();
+        handle.mount_image()?;
+        Ok(())
     }
 }

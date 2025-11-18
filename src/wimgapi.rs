@@ -5,8 +5,9 @@ use serde::Serialize;
 use std::ffi::{c_void, OsStr};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::ptr;
 use std::ptr::null_mut;
+use std::{mem, ptr};
+use windows::core::GUID;
 use windows::Win32::Foundation::{GetLastError, GENERIC_EXECUTE};
 
 /// WIMGAPI错误类型枚举
@@ -51,6 +52,7 @@ pub const WIM_GENERIC_WRITE: u32 = 0x4000_0000; // GENERIC_WRITE
 pub const WIM_CREATE_NEW: u32 = 1; // CREATE_NEW
 pub const WIM_CREATE_ALWAYS: u32 = 2; // CREATE_ALWAYS
 pub const WIM_OPEN_EXISTING: u32 = 3; // OPEN_EXISTING
+pub const WIM_OPEN_ALWAYS: u32 = 4; // OPEN_ALWAYS
 
 pub const WIM_COMPRESS_NONE: u32 = 0;
 pub const WIM_COMPRESS_XPRESS: u32 = 1;
@@ -123,6 +125,36 @@ pub const WIM_COMMIT_FLAG_APPEND: u32 = 0x0000_0001; // WIMCommitImageHandle
 // Windows API 定义的路径最大长度
 pub const MAX_PATH: usize = 260;
 
+// 内部使用的原始结构体，用于与 Windows API 交互
+#[repr(C)]
+struct WIM_MOUNT_INFO_LEVEL0_RAW {
+    wim_path: [u16; MAX_PATH],
+    mount_path: [u16; MAX_PATH],
+    image_index: u32,
+    mounted_for_rw: bool,
+}
+#[repr(C)]
+struct WIM_MOUNT_INFO_LEVEL1_RAW {
+    wim_path: [u16; MAX_PATH],
+    mount_path: [u16; MAX_PATH],
+    image_index: u32,
+    mount_flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct WIM_INFO_RAW {
+    wim_path: [u16; MAX_PATH],
+    guid: GUID,
+    image_count: u32,
+    compression_type: u32,
+    part_number: u16,
+    total_parts: u16,
+    boot_index: u32,
+    wim_attributes: u32,
+    wim_flags_and_attr: u32,
+}
+
 /// MOUNTED_IMAGE_INFO_LEVELS 枚举
 pub enum MountedImageInfoLevels {
     /// 使用 WIM_MOUNT_INFO_LEVEL0 结构
@@ -167,20 +199,33 @@ pub struct WimMountInfoLevel1 {
     pub mount_flags: u32,
 }
 
-// 内部使用的原始结构体，用于与 Windows API 交互
-#[repr(C)]
-struct WIM_MOUNT_INFO_LEVEL0_RAW {
-    wim_path: [u16; MAX_PATH],
-    mount_path: [u16; MAX_PATH],
-    image_index: u32,
-    mounted_for_rw: bool,
-}
-#[repr(C)]
-struct WIM_MOUNT_INFO_LEVEL1_RAW {
-    wim_path: [u16; MAX_PATH],
-    mount_path: [u16; MAX_PATH],
-    image_index: u32,
-    mount_flags: u32,
+#[derive(Debug, Clone)]
+pub struct WimInfo {
+    /// 指定 .wim 文件的完整路径
+    pub wim_path: String,
+    /// 指定包含 Windows 映像 (.wim) 文件唯一标识符的 GUID 结构。
+    pub guid: GUID,
+    /// 指定 .wim 文件中包含的映像数量。
+    pub image_count: u32,
+    /// 指定用于压缩 .wim 文件中资源的压缩方法。 有关初始压缩类型，请参阅 WIMCreateFile 函数。
+    pub compression_type: u32,
+    /// 指定跨文件集中当前 .wim 文件的部件号。 除非 .wim 文件的数据最初是由 WIMSplitFile 函数分割的，否则此值应为 1。
+    pub part_number: u16,
+    /// 指定跨文件集中 .wim 文件部件的总数。 除非 .wim 文件的数据最初是通过 WIMSplitFile 函数分割的，否则此值必须为 1。
+    pub total_parts: u16,
+    /// 指定 .wim 文件中可启动映像的索引。 如果此值为 0，则没有可用的可启动映像。 要设置可启动映像，请调用 WIMSetBootImage 函数。
+    pub boot_index: u32,
+    /// 指定如何处理文件以及使用哪些功能。
+    /// - `WIM_ATTRIBUTE_NORMAL`: .wim 文件没有设置任何其他属性。
+    /// - `WIM_ATTRIBUTE_RESOURCE_ONLY`: .wim 文件只包含文件资源，而不包含映像或元数据。
+    /// - `WIM_ATTRIBUTE_METADATA_ONLY`: .wim 文件只包含映像资源和 XML 信息。
+    /// - `WIM_ATTRIBUTE_VERIFY_DATA`: .wim 文件包含可被 WIMCopyFile 或 WIMCreateFile 函数使用的完整性数据。
+    /// - `WIM_ATTRIBUTE_RP_FIX`: .wim 文件包含一个或多个已启用符号链接或交叉点路径修复的映像。
+    /// - `WIM_ATTRIBUTE_SPANNED`: 通过 WIMSplitFile，.wim 文件已被分割成多个部分。
+    /// - `WIM_ATTRIBUTE_READONLY`: .wim 文件已被锁定，无法进行修改。
+    pub wim_attributes: u32,
+    /// 指定在 WIMCreateFile 函数期间使用的标志。
+    pub wim_flags_and_attr: u32,
 }
 
 type Pcwstr = *const u16;
@@ -199,17 +244,12 @@ type DsofWimcreateFile = unsafe extern "system" fn(
 
 type DosfWimcloseHandle = unsafe extern "system" fn(hObject: Handle) -> bool;
 
-type DosfWimsetReferenceFile =
-    unsafe extern "system" fn(hWim: Handle, pszPath: Pcwstr, dwFlags: u32) -> bool;
+type DosfWimsetReferenceFile = unsafe extern "system" fn(hWim: Handle, pszPath: Pcwstr, dwFlags: u32) -> bool;
 
-type DosfWimcaptureImage =
-    unsafe extern "system" fn(hWim: Handle, pszPath: Pcwstr, dwCaptureFlags: u32) -> Handle;
+type DosfWimcaptureImage = unsafe extern "system" fn(hWim: Handle, pszPath: Pcwstr, dwCaptureFlags: u32) -> Handle;
 
-type DosfWimcommitImageHandle = unsafe extern "system" fn(
-    hImage: Handle,
-    dwCommitFlags: u32,
-    phNewImageHandle: *mut Handle,
-) -> bool;
+type DosfWimcommitImageHandle =
+    unsafe extern "system" fn(hImage: Handle, dwCommitFlags: u32, phNewImageHandle: *mut Handle) -> bool;
 
 type DosfWimsetTemporaryPath = unsafe extern "system" fn(hImage: Handle, pszPath: Pcwstr) -> bool;
 
@@ -217,11 +257,11 @@ type DosfWimloadImage = unsafe extern "system" fn(hWim: Handle, dwImageIndex: u3
 
 type DosfWimgetImageCount = unsafe extern "system" fn(hWim: Handle) -> u32;
 
-type DosfWimgetImageInformation = unsafe extern "system" fn(
-    hImage: Handle,
-    ppvImageInfo: *mut *mut std::ffi::c_void,
-    pcbImageInfo: *mut u32,
-) -> bool;
+type DosfWIMGetAttributes =
+    unsafe extern "system" fn(hWim: Handle, pWimInfo: *mut WIM_INFO_RAW, cbWimInfo: u32) -> bool;
+
+type DosfWimgetImageInformation =
+    unsafe extern "system" fn(hImage: Handle, ppvImageInfo: *mut *mut std::ffi::c_void, pcbImageInfo: *mut u32) -> bool;
 
 type DosfWimsetImageInformation = unsafe extern "system" fn(
     hWim: Handle,
@@ -229,11 +269,9 @@ type DosfWimsetImageInformation = unsafe extern "system" fn(
     dwImageInfoSize: u32,
 ) -> bool;
 
-type DosfWimapplyImage =
-    unsafe extern "system" fn(hWim: Handle, pszPath: Pcwstr, dwApplyFlags: u32) -> bool;
+type DosfWimapplyImage = unsafe extern "system" fn(hWim: Handle, pszPath: Pcwstr, dwApplyFlags: u32) -> bool;
 
-type DosfWimexportImage =
-    unsafe extern "system" fn(hImage: Handle, pszWimFileName: Handle, dwFlags: u32) -> bool;
+type DosfWimexportImage = unsafe extern "system" fn(hImage: Handle, pszWimFileName: Handle, dwFlags: u32) -> bool;
 
 type DosfWimdeleteImage = unsafe extern "system" fn(hWim: Handle, dwImageIndex: u32) -> bool;
 
@@ -256,8 +294,7 @@ type DosfWimunmountImage = unsafe extern "system" fn(
     bCommitChanges: bool,
 ) -> bool;
 
-type DsofWIMUnmountImageHandle =
-    unsafe extern "system" fn(hImage: Handle, dwUnmountFlags: u32) -> bool;
+type DsofWIMUnmountImageHandle = unsafe extern "system" fn(hImage: Handle, dwUnmountFlags: u32) -> bool;
 
 type DsofWIMRemountImage = unsafe extern "system" fn(pszMountPath: Pwstr, dwFlags: u32) -> bool;
 
@@ -290,6 +327,7 @@ pub struct Wimgapi {
     WIMSetTemporaryPath: DosfWimsetTemporaryPath,
     WIMLoadImage: DosfWimloadImage,
     WIMGetImageCount: DosfWimgetImageCount,
+    WIMGetAttributes: DosfWIMGetAttributes,
     WIMGetImageInformation: DosfWimgetImageInformation,
     WIMApplyImage: DosfWimapplyImage,
     WIMExportImage: DosfWimexportImage,
@@ -346,6 +384,7 @@ impl Wimgapi {
                 WIMSetTemporaryPath: *lib.get(b"WIMSetTemporaryPath")?,
                 WIMLoadImage: *lib.get(b"WIMLoadImage")?,
                 WIMGetImageCount: *lib.get(b"WIMGetImageCount")?,
+                WIMGetAttributes: *lib.get(b"WIMGetAttributes")?,
                 WIMGetImageInformation: *lib.get(b"WIMGetImageInformation")?,
                 WIMSetImageInformation: *lib.get(b"WIMSetImageInformation")?,
                 WIMRegisterMessageCallback: *lib.get(b"WIMRegisterMessageCallback")?,
@@ -393,13 +432,7 @@ impl Wimgapi {
     /// # 返回值
     /// - `Ok(Handle)`: 句柄
     /// - `Err(...)`：失败则返回 FALSE，则包含 Win32 错误码或说明
-    pub fn open(
-        &self,
-        path: &Path,
-        access: u32,
-        operate: u32,
-        compression_type: u32,
-    ) -> Result<Handle, WimApiError> {
+    pub fn open(&self, path: &Path, access: u32, operate: u32, compression_type: u32) -> Result<Handle, WimApiError> {
         let mut _creation: u32 = 0;
 
         let handle = unsafe {
@@ -460,8 +493,7 @@ impl Wimgapi {
     /// - `Ok(())`: 返回成功
     /// - `Err(...)`：失败则返回包含 Win32 错误码的说明
     pub fn set_temp_path(&self, handle: Handle, path: &Path) -> Result<(), WimApiError> {
-        let result =
-            unsafe { (self.WIMSetTemporaryPath)(handle, to_wide(path.as_os_str()).as_ptr()) };
+        let result = unsafe { (self.WIMSetTemporaryPath)(handle, to_wide(path.as_os_str()).as_ptr()) };
         if result {
             Ok(())
         } else {
@@ -543,22 +575,14 @@ impl Wimgapi {
     /// # 返回值
     /// - `Ok(Handle)`: 返回成功，包含卷映像的对象的句柄
     /// - `Err(...)`：失败则返回包含 Win32 错误码的说明
-    pub fn capture(
-        &self,
-        handle: Handle,
-        src_path: &Path,
-        flags: u32,
-    ) -> Result<Handle, WimApiError> {
-        let h_image = unsafe {
-            (self.WIMCaptureImage)(handle, to_wide(src_path.as_os_str()).as_ptr(), flags)
-        };
+    pub fn capture(&self, handle: Handle, src_path: &Path, flags: u32) -> Result<Handle, WimApiError> {
+        let h_image = unsafe { (self.WIMCaptureImage)(handle, to_wide(src_path.as_os_str()).as_ptr(), flags) };
         if h_image != 0 {
             Ok(h_image)
         } else {
             Err(unsafe { WimApiError::Win32Error(GetLastError().0) })
         }
     }
-
     /// 将已加载映像中的更改保存到 .wim 文件中
     ///
     /// # 参数
@@ -612,8 +636,7 @@ impl Wimgapi {
     /// - `Ok(())`: 返回成功
     /// - `Err(...)`：失败则返回包含 Win32 错误码的说明
     pub fn apply_image(&self, handle: Handle, path: &Path, flag: u32) -> Result<(), WimApiError> {
-        let result =
-            unsafe { (self.WIMApplyImage)(handle, to_wide(path.as_os_str()).as_ptr(), flag) };
+        let result = unsafe { (self.WIMApplyImage)(handle, to_wide(path.as_os_str()).as_ptr(), flag) };
 
         if result {
             Ok(())
@@ -727,15 +750,8 @@ impl Wimgapi {
     /// # 返回值
     /// - `Ok(())`: 返回成功
     /// - `Err(...)`：失败则返回包含 Win32 错误码的说明
-    pub fn mount_image_handle(
-        &self,
-        handle: Handle,
-        mount_path: &Path,
-        flags: u32,
-    ) -> Result<(), WimApiError> {
-        let result = unsafe {
-            (self.WIMMountImageHandle)(handle, to_wide(mount_path.as_os_str()).as_mut_ptr(), flags)
-        };
+    pub fn mount_image_handle(&self, handle: Handle, mount_path: &Path, flags: u32) -> Result<(), WimApiError> {
+        let result = unsafe { (self.WIMMountImageHandle)(handle, to_wide(mount_path.as_os_str()).as_mut_ptr(), flags) };
 
         if result {
             Ok(())
@@ -864,10 +880,8 @@ impl Wimgapi {
                     let raw_info = &*raw_ptr;
 
                     // 将UTF-16字符串转换为Rust字符串
-                    let wim_path =
-                        Wimgapi::utf16_ptr_to_string(&raw_info.wim_path as *const u16, MAX_PATH);
-                    let mount_path =
-                        Wimgapi::utf16_ptr_to_string(&raw_info.mount_path as *const u16, MAX_PATH);
+                    let wim_path = Wimgapi::utf16_ptr_to_string(&raw_info.wim_path as *const u16, MAX_PATH);
+                    let mount_path = Wimgapi::utf16_ptr_to_string(&raw_info.mount_path as *const u16, MAX_PATH);
 
                     result_list.push(WimMountInfoLevel1 {
                         wim_path,
@@ -895,8 +909,7 @@ impl Wimgapi {
     /// - `Ok(())`: 返回成功
     /// - `Err(...)`：失败则返回包含 Win32 错误码的说明
     pub fn remount_image(&self, mount_path: &Path) -> Result<(), WimApiError> {
-        let result =
-            unsafe { (self.WIMRemountImage)(to_wide(mount_path.as_os_str()).as_mut_ptr(), 0) };
+        let result = unsafe { (self.WIMRemountImage)(to_wide(mount_path.as_os_str()).as_mut_ptr(), 0) };
 
         if result {
             Ok(())
@@ -908,26 +921,21 @@ impl Wimgapi {
     /// 将映像数据从一个 Windows 映像 (.wim) 文件传输到另一个。
     ///
     /// # 参数
-    /// - `hImage`: 通过 WIMLoadImage 函数打开的映像的句柄。
-    /// - `hWim`: WIMCreateFile 函数返回的 .wim 文件句柄。 此句柄必须具有 `WIM_GENERIC_WRITE` 访问权限才能接受导出的映像。 不支持拆分 .wim 文件。
+    /// - `hImage`: 通过 `WIMLoadImage` 函数打开的映像的句柄。
+    /// - `hWim`: `WIMCreateFile` 函数返回的 .wim 文件句柄。 此句柄必须具有 `WIM_GENERIC_WRITE` 访问权限才能接受导出的映像。 不支持拆分 .wim 文件。
     /// - `flags`: 指定将映像导出到目标 .wim 文件的方式。
     ///   - `WIM_EXPORT_ALLOW_DUPLICATES`: 即使映像已存储在 .wim 文件中，它也会被导出到目标 .wim 文件中。
     ///   - `WIM_EXPORT_ONLY_RESOURCES`: 文件资源会被导出到目标 .wim 文件中，并且不包含映像资源或 XML 信息。
     ///   - `WIM_EXPORT_ONLY_METADATA`: 映像资源和 XML 信息将被导出到目标 .wim 文件中，并且不包括支持文件资源。
     ///
     /// # 注意
-    /// - 在调用 WIMExportImage 函数之前，必须为源文件和目标 .wim 文件调用 WIMSetTemporaryPath 函数。
+    /// - 在调用 `WIMExportImage` 函数之前，必须为源文件和目标 .wim 文件调用 `WIMSetTemporaryPath` 函数。
     /// - 如果 `flag` 参数传递的值为 0，且映像已存储在于目标中，则函数将返回 `FALSE`，并将 `LastError` 设置为 `ERROR_ALREADY_EXISTS`。
     ///
     /// # 返回值
     /// - `Ok(())`: 返回成功
     /// - `Err(...)`：失败则返回包含 Win32 错误码的说明
-    pub fn export_image(
-        &self,
-        hImage: Handle,
-        hWim: Handle,
-        flags: u32,
-    ) -> Result<(), WimApiError> {
+    pub fn export_image(&self, hImage: Handle, hWim: Handle, flags: u32) -> Result<(), WimApiError> {
         let result = unsafe { (self.WIMExportImage)(hImage, hWim, flags) };
 
         if result {
@@ -949,15 +957,8 @@ impl Wimgapi {
     /// # 返回值
     /// - `Ok(())`: 返回成功
     /// - `Err(...)`：失败则返回包含 Win32 错误码的说明
-    pub fn set_reference_file(
-        &self,
-        handle: Handle,
-        ref_path: &Path,
-        flag: u32,
-    ) -> Result<(), WimApiError> {
-        let result = unsafe {
-            (self.WIMSetReferenceFile)(handle, to_wide(ref_path.as_os_str()).as_ptr(), flag)
-        };
+    pub fn set_reference_file(&self, handle: Handle, ref_path: &Path, flag: u32) -> Result<(), WimApiError> {
+        let result = unsafe { (self.WIMSetReferenceFile)(handle, to_wide(ref_path.as_os_str()).as_ptr(), flag) };
 
         if result {
             Ok(())
@@ -966,6 +967,14 @@ impl Wimgapi {
         }
     }
 
+    /// 将 UTF-16 编码的字符串转换为 Rust 字符串
+    ///
+    /// # 参数
+    /// - `ptr`: 指向 UTF-16 编码字符串的指针
+    /// - `units`: 字符串的长度（单位：UTF-16 代码单元）
+    ///
+    /// # 返回值
+    /// - `String`: 转换后的 Rust 字符串
     fn utf16_ptr_to_string(ptr: *const u16, units: usize) -> String {
         if ptr.is_null() || units == 0 {
             return String::new();
@@ -989,26 +998,52 @@ impl Wimgapi {
     /// # 返回值
     /// - `Ok(String)`: 包含卷映像信息的 XML 字符串
     /// - `Err(WimApiError)`: 错误信息
-    pub fn get_image_info(&self, hImage: Handle) -> Result<String, WimApiError> {
+    pub fn get_image_info(&self, handle: Handle) -> Result<String, WimApiError> {
         let mut pv: *mut std::ffi::c_void = ptr::null_mut();
         let mut size: u32 = 0;
 
         let result = unsafe {
-            (self.WIMGetImageInformation)(
-                hImage,
-                &mut pv as *mut *mut std::ffi::c_void,
-                &mut size as *mut u32,
-            )
+            (self.WIMGetImageInformation)(handle, &mut pv as *mut *mut std::ffi::c_void, &mut size as *mut u32)
         };
         if !result {
             return Err(WimApiError::Win32Error(unsafe { GetLastError().0 }));
         }
 
         // Interpret pv as UTF-16LE buffer of size bytes -> u16 units = size/2
-        let units = (size as usize) / 2;
-        let xml_string = Wimgapi::utf16_ptr_to_string(pv as *const u16, units);
+        let xml_string = Wimgapi::utf16_ptr_to_string(pv as *const u16, (size as usize) / 2);
 
         Ok(xml_string)
+    }
+
+    /// 获取wim映像属性
+    ///
+    /// # 参数
+    /// - `hWim`: 由 WIMCreateFile 函数返回的句柄
+    ///
+    /// # 返回值
+    /// - `Ok(WIM_INFO_RAW)`: 包含卷映像属性的结构体
+    /// - `Err(WimApiError)`: 错误信息
+    pub fn get_attributes(&self, handle: Handle) -> Result<WimInfo, WimApiError> {
+        let mut raw: WIM_INFO_RAW = unsafe { mem::zeroed() };
+        let size = mem::size_of::<WIM_INFO_RAW>() as u32;
+
+        let result = unsafe { (self.WIMGetAttributes)(handle, &mut raw as *mut _, size) };
+        if !result {
+            return Err(WimApiError::Win32Error(unsafe { GetLastError().0 }));
+        }
+
+        let path = Wimgapi::utf16_ptr_to_string(raw.wim_path.as_ptr(), MAX_PATH);
+        Ok(WimInfo {
+            wim_path: path,
+            guid: raw.guid,
+            image_count: raw.image_count,
+            compression_type: raw.compression_type,
+            part_number: raw.part_number,
+            total_parts: raw.total_parts,
+            boot_index: raw.boot_index,
+            wim_attributes: raw.wim_attributes,
+            wim_flags_and_attr: raw.wim_flags_and_attr,
+        })
     }
 
     /// 设置卷映像信息
@@ -1031,9 +1066,7 @@ impl Wimgapi {
         let buffer_size = (utf16_chars.len() * std::mem::size_of::<u16>()) as u32;
 
         // 调用 WIMSetImageInformation 函数
-        let result = unsafe {
-            (self.WIMSetImageInformation)(hImage, utf16_chars.as_ptr() as *const u8, buffer_size)
-        };
+        let result = unsafe { (self.WIMSetImageInformation)(hImage, utf16_chars.as_ptr() as *const u8, buffer_size) };
 
         if result {
             Ok(())
