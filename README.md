@@ -165,8 +165,7 @@ WimPatch.exe clean
 
 ### Patch Creation/Application Working Principle ⚙️
 
-WimPatch uses Windows Imaging API (WIMGAPI) to process WIM files. The program automatically extracts the required
-`wimgapi.dll` file from embedded resources.
+WimPatch uses Windows Imaging API (WIMGAPI) to process WIM files.
 
 #### Patch Creation Process:
 

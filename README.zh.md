@@ -158,7 +158,7 @@ WimPatch.exe clean
 
 ### 补丁创建/应用工作原理 ⚙️
 
-WimPatch 使用 Windows 映像 API (WIMGAPI) 来处理 WIM 文件。程序会自动从嵌入式资源中提取所需的 `wimgapi.dll` 文件。
+WimPatch 使用 Windows 映像 API (WIMGAPI) 来处理 WIM 文件。
 
 #### 创建补丁 (Create) 流程：
 
